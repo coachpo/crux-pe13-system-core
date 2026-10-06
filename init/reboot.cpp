@@ -989,6 +989,31 @@ static bool CommandIsPresent(bootloader_message* boot) {
     return false;
 }
 
+// Plain PE navigation uses the kernel reboot target, not the shared original-OS BCB.
+static bool IsCruxPePlainReboot(const std::vector<std::string>& params) {
+    if (params.size() != 2 || params[0] != "reboot" ||
+        (params[1] != "bootloader" && params[1] != "recovery") ||
+        android::base::GetProperty("ro.product.device", "") != "crux" ||
+        access("/dev/crux-pe-storage-guard.active", F_OK) != 0) {
+        return false;
+    }
+
+    android::fs_mgr::Fstab fstab;
+    if (!android::fs_mgr::ReadDefaultFstab(&fstab) ||
+        android::fs_mgr::GetEntryForMountPoint(&fstab, "/misc") != nullptr ||
+        android::fs_mgr::GetEntryForMountPoint(&fstab, "/cache") != nullptr) {
+        return false;
+    }
+    auto is_pe_volume = [&fstab](const char* mount_point, const char* partition) {
+        const auto* volume = android::fs_mgr::GetEntryForMountPoint(&fstab, mount_point);
+        return volume != nullptr &&
+               (volume->blk_device == std::string("/dev/block/by-name/") + partition ||
+                volume->blk_device == std::string("/dev/block/bootdevice/by-name/") + partition);
+    };
+    return is_pe_volume("/system", "pesystem") && is_pe_volume("/vendor", "pevendor") &&
+           is_pe_volume("/data", "peuserdata") && is_pe_volume("/metadata", "pemetadata");
+}
+
 void HandlePowerctlMessage(const std::string& command) {
     unsigned int cmd = 0;
     std::vector<std::string> cmd_params = Split(command, ",");
@@ -996,6 +1021,7 @@ void HandlePowerctlMessage(const std::string& command) {
     bool run_fsck = false;
     bool command_invalid = false;
     bool userspace_reboot = false;
+    const bool crux_pe_plain_reboot = IsCruxPePlainReboot(cmd_params);
 
     if (cmd_params[0] == "shutdown") {
         cmd = ANDROID_RB_POWEROFF;
@@ -1028,14 +1054,14 @@ void HandlePowerctlMessage(const std::string& command) {
             }
             // When rebooting to the bootloader notify the bootloader writing
             // also the BCB.
-            if (reboot_target == "bootloader") {
+            if (reboot_target == "bootloader" && !crux_pe_plain_reboot) {
                 std::string err;
                 if (!write_reboot_bootloader(&err)) {
                     LOG(ERROR) << "reboot-bootloader: Error writing "
                                   "bootloader_message: "
                                << err;
                 }
-            } else if (reboot_target == "recovery") {
+            } else if (reboot_target == "recovery" && !crux_pe_plain_reboot) {
                 bootloader_message boot = {};
                 if (std::string err; !read_bootloader_message(&boot, &err)) {
                     LOG(ERROR) << "Failed to read bootloader message: " << err;
