@@ -869,6 +869,13 @@ static void workaround_snet_properties() {
         return;
     }
 
+    // Crux development ADB needs the real build/debug properties before UI setup.
+    if (build_type == "userdebug" &&
+        android::base::GetProperty("ro.product.device", "") == "crux" &&
+        android::base::GetProperty("ro.vendor.crux.early_adb", "") == "1") {
+        return;
+    }
+
     // Weaken property override security to set safetynet props
     weaken_prop_override_security = true;
 
