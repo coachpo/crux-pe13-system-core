@@ -350,7 +350,17 @@ bool IsDtFstabCompatible() {
     return false;
 }
 
+// The Crux dual-boot profile owns its fstab. The firmware DT describes MIUI
+// partitions and must not override or merge into either PE init stage.
+bool IsCruxPeFstabProfile() {
+    std::string suffix;
+    return (fs_mgr_get_boot_config("fstab_suffix", &suffix) && suffix == "crux_uboot") ||
+           access("/fstab.crux_uboot", F_OK) == 0 ||
+           access("/vendor/etc/fstab.crux_uboot", F_OK) == 0;
+}
+
 std::string ReadFstabFromDt() {
+    if (IsCruxPeFstabProfile()) return {};
     if (!is_dt_compatible() || !IsDtFstabCompatible()) {
         return {};
     }
@@ -440,6 +450,18 @@ std::string ReadFstabFromDt() {
 // ramdisk's copy of the fstab had to be located in the root directory, but now
 // the system/etc directory is supported too and is the preferred location.
 std::string GetFstabPath() {
+    if (IsCruxPeFstabProfile()) {
+        for (const char* path : {"/odm/etc/fstab.crux_uboot", "/vendor/etc/fstab.crux_uboot",
+                                "/system/etc/fstab.crux_uboot",
+                                "/first_stage_ramdisk/system/etc/fstab.crux_uboot",
+                                "/fstab.crux_uboot", "/first_stage_ramdisk/fstab.crux_uboot"}) {
+            if (access(path, F_OK) == 0) return path;
+        }
+        // A missing PE fstab is an installation error, not a reason to route
+        // this profile through an unrelated hardware fstab.
+        return "";
+    }
+
     for (const char* prop : {"fstab_suffix", "hardware", "hardware.platform"}) {
         std::string suffix;
 

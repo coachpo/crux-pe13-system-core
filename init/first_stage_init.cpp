@@ -38,6 +38,7 @@
 #include <modprobe/modprobe.h>
 #include <private/android_filesystem_config.h>
 
+#include "crux_storage_guard.h"
 #include "debug_ramdisk.h"
 #include "first_stage_console.h"
 #include "first_stage_mount.h"
@@ -339,6 +340,27 @@ int FirstStageMain(int argc, char** argv) {
         setenv(kEnvInitModuleDurationMs, std::to_string(module_elapse_time.count()).c_str(), 1);
         LOG(INFO) << "Loaded " << module_count << " kernel modules took "
                   << module_elapse_time.count() << " ms";
+    }
+
+    // Protect the original MIUI partitions before either the first-stage mount
+    // or the debug console can run. The ramdisk file also identifies the PE
+    // profile when the suffix argument is accidentally omitted.
+    bool crux_pe_profile = access("/fstab.crux_uboot", F_OK) == 0;
+    auto check_pe_profile = [&](const std::string& key, const std::string& value) {
+        if (key == "androidboot.fstab_suffix" && value == "crux_uboot") crux_pe_profile = true;
+    };
+    ImportKernelCmdline(check_pe_profile);
+    ImportBootconfig(check_pe_profile);
+    if (crux_pe_profile) {
+        int guard_log_fd = open("/dev/kmsg", O_WRONLY | O_CLOEXEC);
+        if (!ProtectCruxPeStorage("/sys/class/block", "/dev/crux-pe-protected",
+                                  "/dev/crux-pe-storage-guard.active", guard_log_fd)) {
+            LOG(ERROR) << "Crux PE storage protection failed; awaiting boot watchdog";
+            // A debug handoff already armed the U-Boot watchdog. Do not let the
+            // userdebug fatal handler reboot or proceed to a persistent mount.
+            for (;;) pause();
+        }
+        close(guard_log_fd);
     }
 
     bool created_devices = false;
